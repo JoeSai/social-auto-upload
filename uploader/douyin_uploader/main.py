@@ -252,15 +252,56 @@ class DouYinBaseUploader(BaseVideoUploader):
     async def set_schedule_time_douyin(self, page, publish_date):
         label_element = page.locator("[class^='radio']:has-text('定时发布')")
         await label_element.click()
-        await asyncio.sleep(1)
-        publish_date_hour = publish_date.strftime("%Y-%m-%d %H:%M")
+        # 等待定时发布面板展开，date input 可见
+        date_input = page.locator('.semi-input[placeholder="日期和时间"]')
+        await date_input.wait_for(state="visible", timeout=5000)
+        await asyncio.sleep(0.5)
 
-        await asyncio.sleep(1)
-        await page.locator('.semi-input[placeholder="日期和时间"]').click()
-        await page.keyboard.press("Control+KeyA")
-        await page.keyboard.type(str(publish_date_hour))
+        publish_date_hour = publish_date.strftime("%Y-%m-%d %H:%M")
+        douyin_logger.info(_msg("⏰", f"设置定时发布: {publish_date_hour}"))
+
+        # 清空输入框：全选后删除，确保无残留
+        await date_input.click()
+        await asyncio.sleep(0.2)
+        await date_input.click(click_count=3)
+        await asyncio.sleep(0.1)
+        await page.keyboard.press("Backspace")
+        await asyncio.sleep(0.2)
+
+        # 逐字输入时间，避免输入法干扰
+        await page.keyboard.type(publish_date_hour, delay=30)
+        await asyncio.sleep(0.3)
         await page.keyboard.press("Enter")
         await asyncio.sleep(1)
+
+        # 验证：确认 input 值是否包含预期日期
+        actual_value = await date_input.input_value()
+        if publish_date_hour not in actual_value:
+            douyin_logger.warning(_msg("⚠️", f"日期输入验证失败，重试: 期望 '{publish_date_hour}'，实际 '{actual_value}'"))
+            # 重试一次
+            await date_input.click()
+            await asyncio.sleep(0.2)
+            await date_input.click(click_count=3)
+            await asyncio.sleep(0.1)
+            await page.keyboard.press("Backspace")
+            await asyncio.sleep(0.2)
+            await page.keyboard.type(publish_date_hour, delay=30)
+            await asyncio.sleep(0.3)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(1)
+            actual_value = await date_input.input_value()
+            if publish_date_hour not in actual_value:
+                douyin_logger.error(_msg("❌", f"日期输入重试仍失败: 期望 '{publish_date_hour}'，实际 '{actual_value}'"))
+            else:
+                douyin_logger.success(_msg("✅", f"重试后日期设置成功: {publish_date_hour}"))
+        else:
+            douyin_logger.success(_msg("✅", f"日期设置确认: {publish_date_hour}"))
+
+        # 等待 date picker 下拉框关闭、页面稳定
+        await asyncio.sleep(1)
+        # 点击页面空白区域，确保任何弹出层都关闭
+        await page.mouse.click(960, 540)
+        await asyncio.sleep(0.5)
 
     async def fill_title_and_description(self, page: Page, title: str, description: str, tags: list[str] | None = None):
         description_section = (
@@ -276,7 +317,7 @@ class DouYinBaseUploader(BaseVideoUploader):
         description_editor = description_section.locator('.zone-container[contenteditable="true"]').first
         await description_editor.wait_for(state="visible", timeout=10000)
         await description_editor.click()
-        await page.keyboard.press("Control+KeyA")
+        await page.keyboard.press("Meta+KeyA")
         await page.keyboard.press("Delete")
         await page.keyboard.type(description)
 
