@@ -260,46 +260,71 @@ class DouYinBaseUploader(BaseVideoUploader):
         publish_date_hour = publish_date.strftime("%Y-%m-%d %H:%M")
         douyin_logger.info(_msg("⏰", f"设置定时发布: {publish_date_hour}"))
 
-        # 清空输入框：全选后删除，确保无残留
+        # 策略：先清空输入框，再逐字输入，最后用 JS 强制同步值
         await date_input.click()
         await asyncio.sleep(0.2)
-        await date_input.click(click_count=3)
+        # 全选并删除
+        await page.keyboard.press("Meta+A")
         await asyncio.sleep(0.1)
         await page.keyboard.press("Backspace")
-        await asyncio.sleep(0.2)
-
-        # 逐字输入时间，避免输入法干扰
-        await page.keyboard.type(publish_date_hour, delay=30)
         await asyncio.sleep(0.3)
+
+        # 逐字输入时间
+        await page.keyboard.type(publish_date_hour, delay=50)
+        await asyncio.sleep(0.5)
+
+        # 按 Enter 确认
         await page.keyboard.press("Enter")
         await asyncio.sleep(1)
 
-        # 验证：确认 input 值是否包含预期日期
+        # 验证 input 值
         actual_value = await date_input.input_value()
         if publish_date_hour not in actual_value:
-            douyin_logger.warning(_msg("⚠️", f"日期输入验证失败，重试: 期望 '{publish_date_hour}'，实际 '{actual_value}'"))
-            # 重试一次
-            await date_input.click()
-            await asyncio.sleep(0.2)
-            await date_input.click(click_count=3)
-            await asyncio.sleep(0.1)
-            await page.keyboard.press("Backspace")
-            await asyncio.sleep(0.2)
-            await page.keyboard.type(publish_date_hour, delay=30)
-            await asyncio.sleep(0.3)
-            await page.keyboard.press("Enter")
+            douyin_logger.warning(_msg("⚠️", f"Enter 后验证失败: 期望 '{publish_date_hour}'，实际 '{actual_value}'"))
+            # 方法2：用 JS 直接设置 input value 并触发事件
+            await page.evaluate('''
+                (args) => {
+                    const [dateStr] = args;
+                    const input = document.querySelector('.semi-input[placeholder="日期和时间"]');
+                    if (input) {
+                        // React controlled input: 用 nativeInputValueSetter 绕过
+                        const nativeSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeSetter.call(input, dateStr);
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+            ''', [publish_date_hour])
             await asyncio.sleep(1)
             actual_value = await date_input.input_value()
             if publish_date_hour not in actual_value:
-                douyin_logger.error(_msg("❌", f"日期输入重试仍失败: 期望 '{publish_date_hour}'，实际 '{actual_value}'"))
-            else:
+                douyin_logger.warning(_msg("⚠️", f"JS 设置后仍失败: 期望 '{publish_date_hour}'，实际 '{actual_value}'"))
+                # 方法3：点击输入框打开日历面板，直接操作面板
+                await date_input.click()
+                await asyncio.sleep(0.5)
+                # 尝试在面板中找到并点击对应时间
+                panel = page.locator('.semi-datepicker-panel')
+                if await panel.count() > 0:
+                    # 点击面板外部关闭
+                    await page.mouse.click(960, 540)
+                    await asyncio.sleep(0.3)
+                    # 再试一次 fill
+                    await date_input.fill(publish_date_hour)
+                    await asyncio.sleep(0.5)
+                    await page.keyboard.press("Enter")
+                    await asyncio.sleep(1)
+                    actual_value = await date_input.input_value()
+            if publish_date_hour in actual_value:
                 douyin_logger.success(_msg("✅", f"重试后日期设置成功: {publish_date_hour}"))
+            else:
+                douyin_logger.error(_msg("❌", f"所有方法均失败: 期望 '{publish_date_hour}'，实际 '{actual_value}'"))
         else:
             douyin_logger.success(_msg("✅", f"日期设置确认: {publish_date_hour}"))
 
-        # 等待 date picker 下拉框关闭、页面稳定
-        await asyncio.sleep(1)
-        # 点击页面空白区域，确保任何弹出层都关闭
+        # 确保弹出层关闭、页面稳定
+        await asyncio.sleep(0.5)
         await page.mouse.click(960, 540)
         await asyncio.sleep(0.5)
 
